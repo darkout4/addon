@@ -26,11 +26,11 @@ const manifest = {
 app.get('/', (req, res) => res.send('Addon Stremio PT-PT ativo!'));
 app.get('/manifest.json', (req, res) => res.json(manifest));
 
-// Helper ultra-seguro para fetch com timeout curto (3.5s)
+// Helper com timeout ajustado para 6 segundos (ideal para HuggingFace cold starts)
 async function fetchJson(url) {
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3500);
+    const timer = setTimeout(() => controller.abort(), 6000);
     const res = await fetch(url, { signal: controller.signal });
     clearTimeout(timer);
     if (res.ok) return await res.json();
@@ -38,13 +38,12 @@ async function fetchJson(url) {
   return null;
 }
 
-// ROTA DE CATÁLOGOS (UNIFICADO E À PROVA DE FALHAS)
+// ROTA DE CATÁLOGOS
 app.get('/catalog/:type/:id.json', async (req, res) => {
   try {
     const { type } = req.params;
     const reqType = type === 'series' ? 'series' : 'movie';
 
-    // Executa em paralelo mas sem crashar se um falhar
     const results = await Promise.allSettled([
       fetchJson(`${COTONETE_BASE}/catalog/${reqType}/cotonet.json`),
       fetchJson(`${ANIMACAO_PTPT_BASE}/catalog/${reqType}/catalog.json`),
@@ -58,7 +57,6 @@ app.get('/catalog/:type/:id.json', async (req, res) => {
       }
     });
 
-    // Remove duplicados por ID
     const uniqueMap = new Map();
     allMetas.forEach(item => {
       if (item && item.id && !uniqueMap.has(item.id)) {
@@ -72,7 +70,7 @@ app.get('/catalog/:type/:id.json', async (req, res) => {
   }
 });
 
-// ROTA DE STREAMS
+// ROTA DE STREAMS (CORRIGIDA)
 app.get('/stream/:type/:id.json', async (req, res) => {
   try {
     const { type, id } = req.params;
@@ -89,58 +87,48 @@ app.get('/stream/:type/:id.json', async (req, res) => {
       episode = parseInt(parts[2], 10) || 1;
     }
 
+    const encodedId = encodeURIComponent(id);
+
     const results = await Promise.allSettled([
-      fetchJson(`${COTONETE_BASE}/stream/${reqType}/${id}.json`),
-      fetchJson(`${ANIMACAO_PTPT_BASE}/stream/${reqType}/${id}.json`),
-      fetchJson(`${GDRIVE_BASE}/stream/${reqType}/${id}.json`)
+      fetchJson(`${COTONETE_BASE}/stream/${reqType}/${encodedId}.json`),
+      fetchJson(`${ANIMACAO_PTPT_BASE}/stream/${reqType}/${encodedId}.json`),
+      fetchJson(`${GDRIVE_BASE}/stream/${reqType}/${encodedId}.json`)
     ]);
 
     let aggregatedStreams = [];
 
-    // Cotonet
-    if (results[0].status === 'fulfilled' && results[0].value?.streams) {
-      results[0].value.streams.forEach(s => {
-        if (s.url || s.externalUrl) {
-          aggregatedStreams.push({
-            title: `[Cotonet] ${s.title || 'PT-PT'}`,
-            url: s.url || s.externalUrl
-          });
-        }
-      });
-    }
+    const sources = [
+      { res: results[0], tag: 'Cotonet' },
+      { res: results[1], tag: 'NP PT' },
+      { res: results[2], tag: 'GDrive' }
+    ];
 
-    // NP PT
-    if (results[1].status === 'fulfilled' && results[1].value?.streams) {
-      results[1].value.streams.forEach(s => {
-        if (s.url || s.externalUrl) {
-          aggregatedStreams.push({
-            title: `[NP PT] ${s.title || 'PT-PT'}`,
-            url: s.url || s.externalUrl
-          });
-        }
-      });
-    }
+    sources.forEach(({ res, tag }) => {
+      if (res.status === 'fulfilled' && res.value?.streams && Array.isArray(res.value.streams)) {
+        res.value.streams.forEach(s => {
+          if (!s) return;
 
-    // GDrive
-    if (results[2].status === 'fulfilled' && results[2].value?.streams) {
-      results[2].value.streams.forEach(s => {
-        if (s.url || s.externalUrl) {
-          aggregatedStreams.push({
-            title: `[GDrive] ${s.title || 'PT-PT'}`,
-            url: s.url || s.externalUrl
-          });
-        }
-      });
-    }
+          // Clona o objeto original para NÃO perder headers, behaviorHints, etc.
+          const streamObj = { ...s };
 
-    // VidSrc para conteúdo TMDB/IMDb (Abrir no Navegador)
+          // Define a tag/nome da fonte e o título
+          streamObj.name = `[${tag}]`;
+          streamObj.title = s.title || s.name || 'Áudio PT-PT';
+
+          aggregatedStreams.push(streamObj);
+        });
+      }
+    });
+
+    // VidSrc como opção secundária (Abrir apenas no Navegador)
     if (realId.startsWith('tt') || !isNaN(realId)) {
       const vidsrcEmbedUrl = reqType === 'series'
         ? `https://vidsrc.me/embed/tv?tmdb=${realId}&season=${season}&episode=${episode}&sub_lang=pt-PT`
         : `https://vidsrc.me/embed/movie?tmdb=${realId}&sub_lang=pt-PT`;
 
       aggregatedStreams.push({
-        title: '🌐 VidSrc Player (Abrir no Navegador)',
+        name: '[VidSrc]',
+        title: '🌐 Player Web (Abrir no Navegador Externo)',
         externalUrl: vidsrcEmbedUrl
       });
     }
