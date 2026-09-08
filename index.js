@@ -2,7 +2,14 @@ const express = require('express');
 const cors = require('cors');
 
 const app = express();
+
+// 1. Configuração de CORS permissiva para Stremio (Web, Desktop, Android, TV)
 app.use(cors());
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  next();
+});
 
 // ENDPOINTS BASE DAS FONTES PT-PT
 const COTONETE_BASE = 'https://cotonetnet-cotonet.hf.space';
@@ -10,47 +17,43 @@ const ANIMACAO_PTPT_BASE = 'https://anima-o-pt-pt-addon-stremio-6dzv.vercel.app'
 const GDRIVE_BASE = 'https://pt-pt-gdrive.newptdrive.workers.dev';
 const M3U_ANIMATION_URL = 'https://tk26m3u.xyz/API/scraped-data.m3u';
 
-// SERVIDORES VIDSRC / EMBED DE ALTA PERFORMANCE (ESTILO AUTOEMBED / STREMSRC)
+// SERVIDORES EMBED (Configurados com externalUrl para abrir no navegador/player externo)
 const EMBED_PROVIDERS = [
   {
     name: 'VidSrc.pro',
     getMovie: (id) => `https://vidsrc.pro/embed/movie/${id}`,
-    getTv: (id, s, e) => `https://vidsrc.pro/embed/tv/${id}/${s}/${e}`,
-    referer: 'https://vidsrc.pro/'
+    getTv: (id, s, e) => `https://vidsrc.pro/embed/tv/${id}/${s}/${e}`
   },
   {
     name: 'VidLink.pro',
     getMovie: (id) => `https://vidlink.pro/movie/${id}?primaryColor=e50914`,
-    getTv: (id, s, e) => `https://vidlink.pro/tv/${id}/${s}/${e}?primaryColor=e50914`,
-    referer: 'https://vidlink.pro/'
+    getTv: (id, s, e) => `https://vidlink.pro/tv/${id}/${s}/${e}?primaryColor=e50914`
   },
   {
     name: 'VidSrc.cc',
     getMovie: (id) => `https://vidsrc.cc/v2/embed/movie/${id}?autoPlay=true`,
-    getTv: (id, s, e) => `https://vidsrc.cc/v2/embed/tv/${id}/${s}/${e}?autoPlay=true`,
-    referer: 'https://vidsrc.cc/'
+    getTv: (id, s, e) => `https://vidsrc.cc/v2/embed/tv/${id}/${s}/${e}?autoPlay=true`
   },
   {
     name: 'AutoEmbed',
     getMovie: (id) => `https://autoembed.co/movie/tmdb/${id}`,
-    getTv: (id, s, e) => `https://autoembed.co/tv/tmdb/${id}-${s}-${e}`,
-    referer: 'https://autoembed.co/'
+    getTv: (id, s, e) => `https://autoembed.co/tv/tmdb/${id}-${s}-${e}`
   },
   {
     name: 'VidSrc.xyz',
     getMovie: (id) => `https://vidsrc.xyz/embed/movie?tmdb=${id}&sub_lang=pt-PT`,
-    getTv: (id, s, e) => `https://vidsrc.xyz/embed/tv?tmdb=${id}&season=${s}&episode=${e}&sub_lang=pt-PT`,
-    referer: 'https://vidsrc.xyz/'
+    getTv: (id, s, e) => `https://vidsrc.xyz/embed/tv?tmdb=${id}&season=${s}&episode=${e}&sub_lang=pt-PT`
   }
 ];
 
-// MANIFESTO DO ADDON STREMIO
+// MANIFESTO DO ADDON
+// REMOVIDO 'meta' dos resources! O Cinemeta oficial do Stremio cuida dos metadados IMDb (tt...).
 const manifest = {
   id: 'org.comunidade.addonunificado.v3',
-  version: '1.2.0',
+  version: '1.3.0',
   name: 'Unificado PT-PT + VidSrc Multi-Embed',
-  description: 'Catálogo e streams unificados de fontes PT-PT (Cotonet, GDrive, NP, Tugakids) e VidSrc Multi-Server para conteúdo global.',
-  resources: ['catalog', 'meta', 'stream'],
+  description: 'Catálogo e streams unificados de fontes PT-PT (Cotonet, GDrive, NP, Tugakids) e VidSrc Multi-Server.',
+  resources: ['catalog', 'stream'],
   types: ['movie', 'series'],
   catalogs: [
     { type: 'movie', id: 'unificado_movies', name: 'Filmes PT-PT' },
@@ -60,29 +63,31 @@ const manifest = {
   idPrefixes: ['tt', 'm3u_']
 };
 
-// CACHE INTERNA DE M3U TUGAKIDS
+// CACHE DA LISTA M3U TUGAKIDS
 let m3uCache = [];
 let lastM3uFetch = 0;
 
-// HELPER RESILIENTE PARA REQUISIÇÕES HTTP COM USER-AGENT DE NAVEGADOR
-async function fetchJson(url) {
+// HELPER RESILIENTE (Timeout expandido para 10s para aguentar cold-starts do HuggingFace)
+async function fetchJson(url, timeoutMs = 10000) {
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4500);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     const res = await fetch(url, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'application/json'
       }
     });
     clearTimeout(timer);
     if (res.ok) return await res.json();
-  } catch (e) {}
+  } catch (e) {
+    // Falhas em fontes individuais são ignoradas silenciosamente
+  }
   return null;
 }
 
-// PARSER DA LISTA M3U TUGAKIDS
+// PARSER M3U TUGAKIDS
 async function getM3uData() {
   const NOW = Date.now();
   if (m3uCache.length > 0 && (NOW - lastM3uFetch < 30 * 60 * 1000)) {
@@ -91,7 +96,7 @@ async function getM3uData() {
 
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
+    const timer = setTimeout(() => controller.abort(), 8000);
     const res = await fetch(M3U_ANIMATION_URL, { signal: controller.signal });
     clearTimeout(timer);
 
@@ -123,17 +128,18 @@ async function getM3uData() {
           currentLogo = '';
         }
       }
-      m3uCache = items;
-      lastM3uFetch = NOW;
-      return m3uCache;
+      if (items.length > 0) {
+        m3uCache = items;
+        lastM3uFetch = NOW;
+      }
     }
   } catch (e) {
-    console.error('Erro ao carregar M3U Tugakids:', e);
+    console.error('Erro no M3U Tugakids:', e.message);
   }
   return m3uCache;
 }
 
-// PROCESSADOR DE STREAMS PARA MANTER METADADOS E CABEÇALHOS HTTP
+// FORMATADOR DE STREAMS
 function processStreams(streams, prefix) {
   if (!Array.isArray(streams)) return [];
   return streams.map(s => {
@@ -153,21 +159,24 @@ function processStreams(streams, prefix) {
   });
 }
 
-// ROTAS BASE
-app.get('/', (req, res) => res.send('Addon Stremio PT-PT + VidSrc Multi-Embed Ativo!'));
+// ROTAS
+app.get('/', (req, res) => res.send('Addon Stremio PT-PT Unificado Funcional!'));
 app.get('/manifest.json', (req, res) => res.json(manifest));
 
-// ROTA DE CATÁLOGOS
-app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (req, res) => {
+// ROTA DE CATÁLOGOS (Captura flexível de sub-rotas e .json)
+app.get('/catalog/:type/:id*', async (req, res) => {
   try {
-    const { type, id } = req.params;
+    const type = req.params.type;
     const reqType = type === 'series' ? 'series' : 'movie';
+    let id = (req.params.id || '').replace(/\.json$/i, '');
 
+    // 1. Catálogo M3U Tugakids
     if (id === 'tugakids_catalog') {
       const m3uItems = await getM3uData();
       return res.json({ metas: m3uItems });
     }
 
+    // 2. Catálogos agregados PT-PT
     const results = await Promise.allSettled([
       fetchJson(`${COTONETE_BASE}/catalog/${reqType}/cotonet.json`),
       fetchJson(`${ANIMACAO_PTPT_BASE}/catalog/${reqType}/catalog.json`),
@@ -181,6 +190,7 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
       }
     });
 
+    // Remover itens duplicados por ID
     const uniqueMap = new Map();
     allMetas.forEach(item => {
       if (item && item.id && !uniqueMap.has(item.id)) {
@@ -194,38 +204,22 @@ app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (re
   }
 });
 
-// ROTA DE METADADOS
-app.get('/meta/:type/:id.json', async (req, res) => {
+// ROTA DE STREAMS (Tratamento limpo de IDs IMDb tt... e m3u_)
+app.get('/stream/:type/:id*', async (req, res) => {
   try {
-    const { id } = req.params;
-
-    if (id.startsWith('m3u_')) {
-      const m3uItems = await getM3uData();
-      const item = m3uItems.find(i => i.id === id);
-      if (item) return res.json({ meta: item });
-    }
-    
-    res.json({ meta: null });
-  } catch (err) {
-    res.json({ meta: null });
-  }
-});
-
-// ROTA DE STREAMS
-app.get('/stream/:type/:id.json', async (req, res) => {
-  try {
-    const { type, id } = req.params;
+    const type = req.params.type;
     const reqType = type === 'series' ? 'series' : 'movie';
+    let cleanId = (req.params.id || '').replace(/\.json$/i, '');
 
-    // 1. Stream Tugakids M3U
-    if (id.startsWith('m3u_')) {
+    // 1. Stream M3U Tugakids
+    if (cleanId.startsWith('m3u_')) {
       const m3uItems = await getM3uData();
-      const item = m3uItems.find(i => i.id === id);
+      const item = m3uItems.find(i => i.id === cleanId);
       if (item && item.streamUrl) {
         return res.json({
           streams: [
             {
-              title: '[Tugakids] Stream Directo PT-PT',
+              title: '[Tugakids] Stream Direto PT-PT',
               url: item.streamUrl
             }
           ]
@@ -233,12 +227,13 @@ app.get('/stream/:type/:id.json', async (req, res) => {
       }
     }
 
-    let realId = id;
+    // Extrair ID, Temporada e Episódio (ex: tt0944947:1:1)
+    let realId = cleanId;
     let season = 1;
     let episode = 1;
 
-    if (id.includes(':')) {
-      const parts = id.split(':');
+    if (cleanId.includes(':')) {
+      const parts = cleanId.split(':');
       realId = parts[0];
       season = parseInt(parts[1], 10) || 1;
       episode = parseInt(parts[2], 10) || 1;
@@ -246,9 +241,9 @@ app.get('/stream/:type/:id.json', async (req, res) => {
 
     // 2. Consulta paralela aos Addons PT-PT
     const results = await Promise.allSettled([
-      fetchJson(`${COTONETE_BASE}/stream/${reqType}/${id}.json`),
-      fetchJson(`${ANIMACAO_PTPT_BASE}/stream/${reqType}/${id}.json`),
-      fetchJson(`${GDRIVE_BASE}/stream/${reqType}/${id}.json`)
+      fetchJson(`${COTONETE_BASE}/stream/${reqType}/${cleanId}.json`),
+      fetchJson(`${ANIMACAO_PTPT_BASE}/stream/${reqType}/${cleanId}.json`),
+      fetchJson(`${GDRIVE_BASE}/stream/${reqType}/${cleanId}.json`)
     ]);
 
     let aggregatedStreams = [];
@@ -265,38 +260,19 @@ app.get('/stream/:type/:id.json', async (req, res) => {
       aggregatedStreams.push(...processStreams(results[2].value.streams, 'GDrive PT'));
     }
 
-    // 3. Incorporação do VidSrc Multi-Server (Reprodução Direta no Stremio com Proxy Headers)
+    // 3. Servidores VidSrc Embed (External Links)
     if (realId.startsWith('tt') || !isNaN(realId)) {
       const isSeries = reqType === 'series';
 
       EMBED_PROVIDERS.forEach(provider => {
-        const streamUrl = isSeries
+        const embedUrl = isSeries
           ? provider.getTv(realId, season, episode)
           : provider.getMovie(realId);
 
         aggregatedStreams.push({
-          title: `[${provider.name}] HD Player (Legendas PT)`,
-          url: streamUrl,
-          behaviorHints: {
-            notSupported: false,
-            proxyHeaders: {
-              request: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': provider.referer
-              }
-            }
-          }
+          title: `🌐 [${provider.name}] Player Web External`,
+          externalUrl: embedUrl
         });
-      });
-
-      // Opção de contingência para abrir no navegador do sistema
-      const externalBrowserUrl = isSeries
-        ? `https://vidsrc.me/embed/tv?tmdb=${realId}&season=${season}&episode=${episode}&sub_lang=pt-PT`
-        : `https://vidsrc.me/embed/movie?tmdb=${realId}&sub_lang=pt-PT`;
-
-      aggregatedStreams.push({
-        title: '🌐 [VidSrc] Abrir no Navegador Externo',
-        externalUrl: externalBrowserUrl
       });
     }
 
